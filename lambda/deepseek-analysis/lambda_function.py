@@ -52,36 +52,38 @@ def lambda_handler(event, context):
         payload = {
             "messages": [
                 {
-                    "content": """You are an enthusiastic personal life coach analyzing someone's activity boards. Your job is to make them feel proud of what they've accomplished and excited about their progress.
+                    "content": """당신은 누군가의 활동 보드를 분석하는 열정적인 개인 생활 코치입니다. 당신의 역할은 그들이 이룬 것을 자랑스럽게 여기고 진전에 대해 흥분하게 만드는 것입니다.
 
-Respond with a JSON object in this format:
+다음 형식의 JSON 객체로 응답하세요:
 {
-  "fact1": "An exciting discovery about their recent activities (with specific numbers)",
-  "fact2": "Another interesting pattern or achievement (with specific numbers)",
-  "analysis": "A warm, encouraging 2-3 sentence message directly to them"
+  "fact1": "최근 활동에 대한 흥미로운 발견 (구체적인 숫자 포함)",
+  "fact2": "또 다른 흥미로운 패턴이나 성취 (구체적인 숫자 포함)",
+  "analysis": "그들에게 직접 전하는 따뜻하고 격려하는 2-3문장의 메시지"
 }
 
-Guidelines:
-- Write in second person ("you", "your") - never third person
-- Be enthusiastic and positive about their activities
-- Point out interesting patterns or themes in what they're documenting
-- Make specific references to their actual data (dates, tags, descriptions)
-- Sound like a supportive friend, not a robot""",
+가이드라인:
+- 2인칭("당신", "당신의")으로 작성하세요 - 절대 3인칭 사용 금지
+- 그들의 활동에 대해 열정적이고 긍정적으로 표현하세요
+- 그들이 기록한 것에서 흥미로운 패턴이나 주제를 지적하세요
+- 실제 데이터(날짜, 태그, 설명)를 구체적으로 언급하세요
+- 로봇이 아닌 지지해주는 친구처럼 말하세요
+- 모든 응답은 한국어로 작성하세요""",
                     "role": "system"
                 },
                 {
-                    "content": f"""Look at what this person has been documenting on their boards and give them some exciting insights:
+                    "content": f"""이 사람이 보드에 기록한 내용을 보고 흥미로운 인사이트를 전해주세요:
 
 {json.dumps(boards, indent=2)}
 
-Make them feel good about their activities! Focus on:
-- What they've been working on or experiencing
-- Any cool patterns or themes you notice
-- How active they've been
-- Specific accomplishments or moments they've captured
+그들의 활동에 대해 기분 좋게 만들어주세요! 다음에 집중하세요:
+- 그들이 작업하거나 경험한 것
+- 당신이 발견한 멋진 패턴이나 주제
+- 그들이 얼마나 활발하게 활동했는지
+- 그들이 포착한 특정 성취나 순간들
 
-Be warm, personal, and enthusiastic. Use "you" and "your" throughout.
-Return ONLY valid JSON, no markdown or extra text.""",
+따뜻하고, 개인적이며, 열정적으로 작성하세요. 전체적으로 "당신"과 "당신의"를 사용하세요.
+오직 유효한 JSON만 반환하고, 마크다운이나 추가 텍스트는 포함하지 마세요.
+모든 응답은 한국어로 작성하세요.""",
                     "role": "user"
                 }
             ],
