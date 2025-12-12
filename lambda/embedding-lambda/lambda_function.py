@@ -101,12 +101,11 @@ def lambda_handler(event, context):
         vo = voyageai.Client(api_key=voyage_key, timeout=30)
         print("VoyageAI client initialized successfully")
 
-        print("Initializing Supabase client...")
-        # Use the user's token for authentication to respect RLS policies
-        access_token = event.get('access_token')
-        refresh_token = event.get('refresh_token')
-        supabase: Client = create_client(supabase_url, supabase_key)
-        supabase.auth.set_session(access_token, refresh_token)
+        print("Initializing Supabase client with service key...")
+        supabase: Client = create_client(
+            supabase_url, 
+            supabase_key
+        )
         print("Supabase client initialized successfully")
 
     except Exception as e:
@@ -165,7 +164,7 @@ def lambda_handler(event, context):
 
         # Try multimodal first, fallback to text-only if it fails
         try:
-            result = vo.multimodal_embed(inputs=inputs, model="voyage-multimodal-3")
+            result = vo.multimodal_embed(inputs=inputs, model="voyage-3")
         except Exception as multimodal_error:
             print(f"Multimodal embedding failed, trying text-only: {str(multimodal_error)}")
             if image_obj is not None:
@@ -182,13 +181,14 @@ def lambda_handler(event, context):
             'body': json.dumps({'error': f'Embedding failed: {str(e)}'})
         }
 
-    # Update Supabase using Python client 
+    # Update Supabase using Supabase client
     print(f"Updating Supabase board table for board_id: {data['board_id']}...")
     try:
         # Update the board with the embedding vector
+        # Filter by both board_id AND user_id for security
         result = supabase.table("board").update({
             "vector": combined_embedding
-        }).eq("board_id", data['board_id']).execute()
+        }).eq("board_id", data['board_id']).eq("user_id", data['user_id']).execute()
 
         print(f"Supabase update result: {result}")
         
