@@ -21,17 +21,13 @@ def lambda_handler(event, context):
         }
 
     try:
-        # Check if data is in 'body' (Lambda Function URL) or directly in event (API Gateway)
-        if 'body' in event:
-            # Lambda Function URL format: data is in 'body'
-            if isinstance(event.get('body'), str):
-                body_data = json.loads(event.get('body', '{}'))
-            else:
-                body_data = event.get('body', {})
+        print("=== Deepseek Analysis Lambda started ===")
+        # body can be string in some proxy integrations
+        if isinstance(event.get('body'), str):
+            body_data = json.loads(event.get('body', '{}'))
         else:
-            # API Gateway format: data is directly in event
-            body_data = event
-
+            body_data = event.get('body', {})
+            
         # Support both body_data and event-level keys
         task = body_data.get("task", event.get("task", "analysis"))
         
@@ -53,6 +49,7 @@ def lambda_handler(event, context):
         }
 
         if task == "query_parser":
+            print("=== Performing Query Parsing ===")
             user_query = body_data.get("query", "")
             current_date = body_data.get("current_date", "")
             
@@ -99,70 +96,177 @@ Rules:
             }
             
         elif task == "quick_insight":
-            target_board = body_data.get("target_board", {})
-            related_boards = body_data.get("related_boards", [])
+            # === QUICK INSIGHT TASK ===
+            print("Mode: Quick Insight")
+            boards = body_data.get("boards", [])
             stats = body_data.get("stats", {})
             history = body_data.get("history", "")
+            action = body_data.get("action", "create")  # create, update, or delete
+            target_board_id = body_data.get("target_board_id")  # Specific board to analyze
+            related_boards = body_data.get("related_boards", [])  # RAG: Similar historical boards
 
-            # Extract data
-            description = target_board.get('description') or ""
-            tags = target_board.get('tags', [])
-            tag_names = [t.get('tag_name', t.get('name', '')) for t in tags if isinstance(t, dict)]
+            # Find the target board
+            # 1. Try explicit object passed from frontend
+            target_board = body_data.get("target_board")
+            
+            # 2. Try looking up ID in boards list
+            if not target_board and target_board_id:
+                target_board = next((b for b in boards if b.get('board_id') == target_board_id), None)
 
-            # Build RAG context
+            # 3. Fallback to first board
+            if not target_board:
+                target_board = boards[0] if boards else {}
+
+            # Context boards are all the others
+            context_boards = [b for b in boards if b.get('board_id') != target_board.get('board_id')]
+
+            print(f"Target board description: {target_board.get('description', 'N/A')[:50]}...")
+
+            # Construct context from stats
+            stats_context = ""
+            if stats:
+                habits = stats.get('habits', {})
+                counts = stats.get('counts', {})
+                stats_context = f"""
+                [User Statistics]
+                - Most Active Day: {habits.get('mostActiveDay', 'N/A')}
+                - Current Streak: {habits.get('currentStreak', 0)} days
+                - Total Records: {counts.get('totalBoards', 0)}
+                """
+
+            # Add history context
+            history_context = ""
+            if history:
+                history_context = f"\n\n[Long-term History]\n{history}\n"
+
+            # Build RAG context from related boards
             rag_context = ""
             if related_boards:
-                rag_context = "\n\n=== SIMILAR PAST ENTRIES ===\n"
+                rag_context = "\n\n=== RELATED PAST ENTRIES (Pattern Detection) ===\n"
+                rag_context += "These are semantically similar entries from the user's history:\n\n"
                 for i, rb in enumerate(related_boards[:5], 1):
-                    rb_desc = rb.get('description', 'No description')
-                    rb_date = rb.get('date', 'N/A')
-                    rb_tags = [t.get('tag_name', '') for t in rb.get('tags', []) if isinstance(t, dict)]
-                    rag_context += f"{i}. [{rb_date}] {rb_desc}\n"
-                    if rb_tags:
-                        rag_context += f"   Tags: {', '.join(rb_tags)}\n"
-                rag_context += "\nNotice patterns: frequency, improvements, time gaps, consistency.\n"
+                    rag_context += f"{i}. [{rb.get('date', 'N/A')}] {rb.get('description', 'No description')}\n"
+                    if rb.get('tags'):
+                        tag_names = [t.get('tag_name', '') for t in rb.get('tags', [])]
+                        rag_context += f"   Tags: {', '.join(tag_names)}\n"
+                rag_context += "\n[PATTERN DETECTION INSTRUCTIONS]\n"
+                rag_context += "- Compare the TARGET ENTRY to these RELATED PAST ENTRIES\n"
+                rag_context += "- Notice patterns: frequency, improvements, consistency, time gaps\n"
+                rag_context += "- Examples of pattern-aware responses:\n"
+                rag_context += "  ✅ '이번 주만 벌써 3번째네요!' (if similar activity happened 2+ times this week)\n"
+                rag_context += "  ✅ '2주 만이네요?' (if last similar entry was 2 weeks ago)\n"
+                rag_context += "  ✅ '무게 늘었네요!' (if workout weight increased)\n"
+                rag_context += "  ✅ '요즘 자주 하시네요 ㅎㅎ' (if activity is becoming more frequent)\n"
 
-            # Create prompt
-            prompt = f"""You are a warm, supportive friend reacting to a journal entry.
+            # Action context
+            action_desc = {
+                "create": "User just WROTE this new entry.",
+                "update": "User just EDITED this entry.",
+                "delete": "User just DELETED this entry."
+            }.get(action, "User interacted with this entry.")
 
-[CRITICAL RULES]
-1. Be EMOTIONALLY SUPPORTIVE and encouraging
-2. NEVER count or mention statistics (no "3번째", "4번째", etc.)
-3. If SIMILAR PAST ENTRIES exist, reference SPECIFIC DATES from the list
-4. React to SPECIFIC details in the description
-5. Keep it PERSONAL and WARM
+            # Debug logging
+            print(f"Target Board Keys: {list(target_board.keys())}")
+            print(f"Target Description (Raw): {target_board.get('description')}")
+            
+            # Robust extraction
+            raw_desc = target_board.get('description')
+            if raw_desc is None:
+                raw_desc = ""
+            target_desc = str(raw_desc).strip()
+            
+            # Robust tag extraction
+            raw_tags = target_board.get('tags', [])
+            tag_list = []
+            if isinstance(raw_tags, list):
+                for t in raw_tags:
+                    if isinstance(t, dict):
+                        # Try 'tag_name', 'name', or just values
+                        t_name = t.get('tag_name') or t.get('name') or str(list(t.values())[0] if t else "Unknown")
+                        tag_list.append(t_name)
+                    elif isinstance(t, str):
+                        # It's already a string!
+                        tag_list.append(t)
+                    else:
+                        tag_list.append(str(t))
+            
+            target_tags = ", ".join(tag_list) if tag_list else "(No tags)"
+            target_date = target_board.get('date', 'Unknown Date')
 
-[WHAT TO DO]
-- Notice specific activities, emotions, or achievements
-- If similar entries exist, say things like "지난 (date)에도 비슷한 걸 하셨네요"
-- Use casual Korean (해요체)
-- Max 60 characters
-- NO generic phrases
-- NO periods at the end
+            # Format as structured JSON for the AI
+            ai_input_data = {
+                "description": target_desc,
+                "tags": tag_list,
+                "created_at": target_board.get("created_at", "Unknown"),
+                "debug_info": f"Desc length: {len(target_desc)}"
+            }
 
-[GOOD EXAMPLES]
-"Running 5km" → "5km나... 정말 대단해요"
-"Debugging" → "버그와의 싸움... 고생 많으셨어요"
-Empty + ["Reading"] → "무슨 책 읽고 계세요"
-"운동" + Similar: ["12/9: 헬스"] → "12월 9일에도 운동하셨네요! 꾸준하시네요"
-
-[BAD EXAMPLES - NEVER DO THIS]
-"이번 주 3번째네요!" ❌ (counting)
-"벌써 4번째네요!" ❌ (counting)
-"총 10번 했어요!" ❌ (statistics)
-
-[USER DATA]
-Description: {description}
-Tags: {', '.join(tag_names)}
-{rag_context}
-
-Reply in Korean (해요체), max 60 chars:"""
+            # Check if we actually have data
+            if not target_desc and not tag_list:
+                return {
+                    'statusCode': 200,
+                    'body': json.dumps({
+                        'insight': "⚠️ SYSTEM NOTICE: Data was empty. (Description & Tags missing)",
+                        'debug': ai_input_data,
+                        'raw_received_target': target_board,
+                        'full_body_keys': list(body_data.keys())
+                    }, ensure_ascii=False)
+                }
 
             payload = {
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": f"""You are a witty, observant friend.
+Your goal is to PROVE you read the specific details of the user's entry.
+
+[CORE INSTRUCTION]
+Don't just say "Good job". Tell them WHY it's interesting or relatable.
+If they say "Ate pizza", don't say "Yum". Say "Pepperoni? Or Hawaiian?"
+If they say "Fixed bug", don't say "Good". Say "Finally! That bug was annoying."
+
+[CONTEXT AWARENESS]
+- Time: {target_date} (Is it late? Early?)
+- Status: This entry was just {action.upper()}D.
+
+[ACTION GUIDES]
+- CREATE/UPDATE: React to the content energetically.
+- DELETE: "Deleting '{target_desc[:10]}...'? Changed your mind?" or "Cleaning up history?"
+
+[FORMAT]
+- Korean (casual 해요체)
+- One short sentence (max 60 chars)
+- NO quotes.
+- NO generic placeholders like "오늘 하루".
+
+[EXAMPLES]
+Entry: {{ "description": "Running 5km", "tags": ["Health"] }} 
+-> "와 5km... 무릎 괜찮으세요? 대단해요!"
+
+Entry: {{ "description": "Debugging", "tags": ["Work"] }} 
+-> "버그와의 전쟁... 승리하셨나요?"
+
+Entry: {{ "description": "", "tags": ["Reading"] }} 
+-> "무슨 책이에요? 저도 추천해주세요!"
+"""
+                    },
+                    {
+                        "role": "user",
+                        "content": f"""User Action: {action.upper()}
+
+TARGET DATA (JSON):
+{json.dumps(ai_input_data, ensure_ascii=False, indent=2)}
+
+[RAW DEBUG DUMP]
+(If target data seems empty, look here!)
+{json.dumps(body_data, ensure_ascii=False, default=str)[:3000]}
+
+(React specifically to the description and tags above.)"""
+                    }
+                ],
                 "model": "deepseek-chat",
-                "max_tokens": 100,
-                "temperature": 0.9
+                "max_tokens": 150,
+                "temperature": 1.1
             }
 
             response = requests.post(
@@ -173,10 +277,10 @@ Reply in Korean (해요체), max 60 chars:"""
             )
 
             if not response.ok:
-                raise Exception(f"DeepSeek API Error: {response.text}")
+                 raise Exception(f"DeepSeek API Error: {response.text}")
 
             result = response.json()
-            insight = result['choices'][0]['message']['content'].strip().replace('"', '').rstrip('.')
+            insight = result['choices'][0]['message']['content'].strip().replace('"', '')
 
             return {
                 'statusCode': 200,
@@ -186,15 +290,19 @@ Reply in Korean (해요체), max 60 chars:"""
         
         else:
             # === ANALYSIS TASK (Default) ===
+            print("Mode: Analysis")
             # Try getting boards from body_data first, then fallback to event
             boards = body_data.get("boards") or event.get("boards", [])
-
+    
             if not boards:
+                print("ERROR: No boards data provided")
                 return {
                     'statusCode': 400,
                     'headers': cors_headers,
                     'body': json.dumps({'error': 'No boards data provided'})
                 }
+    
+            print(f"Received {len(boards)} boards for analysis")
             
             # Extract History
             history = body_data.get("history") or event.get("history", "")
@@ -257,6 +365,7 @@ Reply in Korean (해요체), max 60 chars:"""
                 "top_p": 1
             }
 
+        print(f"Calling Deepseek API for {task}...")
         response = requests.post(
             "https://api.deepseek.com/chat/completions",
             headers=headers,
@@ -264,14 +373,19 @@ Reply in Korean (해요체), max 60 chars:"""
             timeout=30
         )
 
+        print(f"Deepseek API responded with status: {response.status_code}")
+
         if not response.ok:
             error_text = response.text
+            print(f"ERROR: Deepseek API error: {error_text}")
             raise Exception(f"Deepseek API error {response.status_code}: {error_text}")
 
         completion = response.json()
+        print(f"Deepseek response: {json.dumps(completion)}")
 
         # Extract the content from the response
         content = completion['choices'][0]['message']['content']
+        print(f"Content (raw): {content}")
 
         # Choose result key
         if task == "query_parser":
